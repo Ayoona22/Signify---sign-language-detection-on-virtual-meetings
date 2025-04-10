@@ -65,14 +65,9 @@ python app.py
 
 4. Begin communicating using sign language - your gestures will be automatically converted to text and speech
 
-## Contributing
+## Testing Video
 
-To contribute to the project:
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Create a pull request
+https://github.com/user-attachments/assets/f228458e-e57e-4137-8ded-6c0753f90a56
 
 ## License
 
