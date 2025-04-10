@@ -42,7 +42,7 @@ Signify_Virtual_Meeting_Pplatform/
 1. Clone the repository:
 
 ```bash
-git clone [[repository-url]](https://github.com/Ayoona22/Signify---sign-language-detection-on-virtual-meetings.git)
+git clone [https://github.com/Ayoona22/Signify---sign-language-detection-on-virtual-meetings.git]
 cd Signify_Virtual_Meeting_Pplatform
 ```
 
