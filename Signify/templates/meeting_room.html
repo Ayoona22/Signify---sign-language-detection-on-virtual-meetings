@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ meeting.title }} - Signify</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/meeting.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.13.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+</head>
+<body>
+    <div class="meeting-container">
+        <div class="meeting-header">
+            <div class="meeting-info">
+                <h1>{{ meeting.title }}</h1>
+                <p class="meeting-code">Meeting Code: {{ meeting.meeting_code }}</p>
+            </div>
+            <div class="meeting-controls">
+                <button class="control-btn" id="cameraBtn">
+                    <i class="fas fa-video"></i>
+                </button>
+                <button class="control-btn" id="gestureBtn">
+                    <i class="fas fa-hand"></i>
+                </button>
+                <button class="control-btn" id="micBtn">
+                    <i class="fas fa-microphone"></i>
+                </button>
+                <button class="control-btn" id="screenShareBtn">
+                    <i class="fas fa-desktop"></i>
+                </button>
+                <button class="control-btn leave-btn" onclick="leaveMeeting()">
+                    <i class="fas fa-phone-slash"></i>
+                </button>
+            </div>
+        </div>
+
+        <div class="meeting-content">
+            <div class="video-grid" id="video-grid">
+                <!-- Video elements will be added here dynamically -->
+            </div>
+            
+            <div class="chat-panel" id="chatPanel">
+                <div class="chat-header">
+                    <h2>Chat</h2>
+                    <button class="close-chat" id="closeChatBtn">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="chat-messages" id="chatMessages">
+                    <!-- Chat messages will be added here dynamically -->
+                </div>
+                <div class="chat-input">
+                    <input type="text" id="messageInput" placeholder="Type a message...">
+                    <button id="sendMessageBtn">
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io({
+            transports: ['websocket'],
+            upgrade: false,
+            reconnection: true,
+            reconnectionAttempts: 5,
+            reconnectionDelay: 1000
+        });
+        const room = '{{ meeting.meeting_code }}';
+        const username = '{{ current_user.username }}';
+        const userId = '{{ current_user.id }}';
+        let localStream = null;
+        let peers = {};
+        let isInitialized = false;
+
+        // WebRTC configuration
+        const configuration = {
+            iceServers: [
+                { 
+                    urls: [
+                        'stun:stun1.l.google.com:19302',
+                        'stun:stun2.l.google.com:19302',
+                        'stun:stun3.l.google.com:19302',
+                        'stun:stun4.l.google.com:19302'
+                    ]
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:80',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:443',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                }
+            ],
+            iceCandidatePoolSize: 10
+        };
+
+        // Initialize when page loads
+        window.addEventListener('load', async () => {
+            if (!isInitialized) {
+                console.log('Initializing meeting...');
+                try {
+                    await initializeStream();
+                    isInitialized = true;
+                } catch (error) {
+                    console.error('Error initializing stream:', error);
+                }
+            }
+        });
+
+        // Initialize media stream
+        async function initializeStream() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                        facingMode: 'user'
+                    },
+                    audio: true
+                });
+                console.log('Got local media stream');
+                
+                // Add local video stream to grid
+                addVideoStream(localStream, userId, username, true);
+                console.log('Added local video to grid');
+                
+                // Join room after stream is initialized
+                socket.emit('join', { 
+                    room: room,
+                    userId: userId,
+                    username: username
+                });
+                console.log('Joined room:', room);
+
+                // Setup socket event listeners
+                setupSocketListeners();
+
+                // Add stream to existing peer connections
+                Object.values(peers).forEach(peer => {
+                    localStream.getTracks().forEach(track => {
+                        peer.addTrack(track, localStream);
+                    });
+                });
+            } catch (error) {
+                console.error('Error accessing media devices:', error);
+                alert('Error accessing camera/microphone. Please check permissions and make sure no other app is using them.');
+            }
+        }
+
+        // Create and setup peer connection
+        function createPeerConnection(userId, username) {
+            try {
+                console.log('Creating peer connection for:', username);
+                const peerConnection = new RTCPeerConnection(configuration);
+                peers[userId] = peerConnection;
+
+                // Add all local tracks to peer connection
+                if (localStream) {
+                    localStream.getTracks().forEach(track => {
+                        console.log('Adding track to peer connection:', track.kind);
+                        peerConnection.addTrack(track, localStream);
+                    });
+                }
+
+                // Handle incoming tracks
+                peerConnection.ontrack = (event) => {
+                    console.log('Received track from:', username, event.track.kind);
+                    if (event.streams && event.streams[0]) {
+                        console.log('Adding remote stream to video grid');
+                        addVideoStream(event.streams[0], userId, username);
+                    }
+                };
+
+                // Handle ICE candidates
+                peerConnection.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        console.log('Sending ICE candidate to:', username);
+                        socket.emit('ice_candidate', {
+                            room: room,
+                            userId: userId,
+                            targetUserId: userId,
+                            candidate: event.candidate
+                        });
+                    }
+                };
+
+                // Handle connection state changes
+                peerConnection.onconnectionstatechange = () => {
+                    console.log('Connection state with', username, ':', peerConnection.connectionState);
+                    if (peerConnection.connectionState === 'failed') {
+                        console.log('Connection failed, attempting to reconnect...');
+                        restartPeerConnection(userId, username);
+                    }
+                };
+
+                // Handle ICE connection state changes
+                peerConnection.oniceconnectionstatechange = () => {
+                    console.log('ICE connection state with', username, ':', peerConnection.iceConnectionState);
+                    if (peerConnection.iceConnectionState === 'failed') {
+                        console.log('ICE Connection failed, restarting...');
+                        peerConnection.restartIce();
+                    }
+                };
+
+                return peerConnection;
+            } catch (error) {
+                console.error('Error creating peer connection:', error);
+                return null;
+            }
+        }
+
+        // Function to restart peer connection
+        async function restartPeerConnection(userId, username) {
+            console.log('Restarting peer connection with:', username);
+            if (peers[userId]) {
+                peers[userId].close();
+                delete peers[userId];
+            }
+
+            const peerConnection = createPeerConnection(userId, username);
+            if (!peerConnection) return;
+
+            try {
+                const offer = await peerConnection.createOffer({
+                    offerToReceiveAudio: true,
+                    offerToReceiveVideo: true,
+                    iceRestart: true
+                });
+                await peerConnection.setLocalDescription(offer);
+                
+                socket.emit('offer', {
+                    room: room,
+                    userId: userId,
+                    username: username,
+                    sdp: offer
+                });
+            } catch (error) {
+                console.error('Error restarting peer connection:', error);
+            }
+        }
+
+        // Setup socket event listeners
+        function setupSocketListeners() {
+            // Handle user joined event
+            socket.on('user_joined', async (data) => {
+                console.log('User joined:', data.username);
+                if (data.userId === userId) return;
+                
+                try {
+                    const peerConnection = createPeerConnection(data.userId, data.username);
+                    if (!peerConnection) return;
+
+                    // Create and send offer
+                    console.log('Creating offer for:', data.username);
+                    const offer = await peerConnection.createOffer({
+                        offerToReceiveAudio: true,
+                        offerToReceiveVideo: true
+                    });
+                    await peerConnection.setLocalDescription(offer);
+                    
+                    console.log('Sending offer to:', data.username);
+                    socket.emit('offer', {
+                        room: room,
+                        userId: data.userId,
+                        username: username,
+                        sdp: offer
+                    });
+                } catch (error) {
+                    console.error('Error in user_joined handler:', error);
+                }
+            });
+
+            // Handle offer received
+            socket.on('offer', async (data) => {
+                if (data.userId === userId) return;
+                console.log('Received offer from:', data.username);
+
+                try {
+                    const peerConnection = createPeerConnection(data.userId, data.username);
+                    if (!peerConnection) return;
+
+                    console.log('Setting remote description from offer');
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                    
+                    console.log('Creating answer for:', data.username);
+                    const answer = await peerConnection.createAnswer();
+                    await peerConnection.setLocalDescription(answer);
+
+                    console.log('Sending answer to:', data.username);
+                    socket.emit('answer', {
+                        room: room,
+                        userId: data.userId,
+                        username: username,
+                        sdp: answer
+                    });
+                } catch (error) {
+                    console.error('Error handling offer:', error);
+                }
+            });
+
+            // Handle answer received
+            socket.on('answer', async (data) => {
+                if (data.userId === userId) return;
+                console.log('Received answer from:', data.username);
+
+                const peerConnection = peers[data.userId];
+                if (peerConnection) {
+                    try {
+                        console.log('Setting remote description from answer');
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                    } catch (error) {
+                        console.error('Error setting remote description:', error);
+                    }
+                }
+            });
+
+            // Handle ICE candidate received
+            socket.on('ice_candidate', async (data) => {
+                if (data.userId === userId) return;
+                console.log('Received ICE candidate from:', data.username);
+
+                const peerConnection = peers[data.userId];
+                if (peerConnection) {
+                    try {
+                        console.log('Adding ICE candidate');
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    } catch (error) {
+                        console.error('Error adding ICE candidate:', error);
+                    }
+                }
+            });
+
+            // Handle user left
+            socket.on('user_left', (data) => {
+                console.log('User left:', data.username);
+                if (peers[data.userId]) {
+                    peers[data.userId].close();
+                    delete peers[data.userId];
+                }
+                const videoContainer = document.getElementById(`video-${data.userId}`);
+                if (videoContainer) {
+                    const video = videoContainer.querySelector('video');
+                    if (video && video.srcObject) {
+                        video.srcObject.getTracks().forEach(track => track.stop());
+                    }
+                    videoContainer.remove();
+                    adjustGridLayout();
+                }
+            });
+        }
+
+        // Remove duplicate event listeners
+        socket.removeAllListeners('user_joined');
+        socket.removeAllListeners('offer');
+        socket.removeAllListeners('answer');
+        socket.removeAllListeners('ice_candidate');
+        socket.removeAllListeners('user_left');
+
+        // Add video stream to grid
+        function addVideoStream(stream, id, name, isLocal = false) {
+            console.log('Adding video stream for:', name);
+            
+            // Remove existing container if it exists
+            const existingContainer = document.getElementById(`video-${id}`);
+            if (existingContainer) {
+                existingContainer.remove();
+            }
+
+            const videoContainer = document.createElement('div');
+            videoContainer.className = 'video-container';
+            videoContainer.id = `video-${id}`;
+
+            const video = document.createElement('video');
+            video.srcObject = stream;
+            video.id = `video-element-${id}`;
+            video.autoplay = true;
+            video.playsInline = true;
+            if (isLocal) video.muted = true;
+
+            // Add error handling for video
+            video.onerror = (error) => {
+                console.error('Video error:', error);
+            };
+
+            // Add loadedmetadata handler
+            video.onloadedmetadata = () => {
+                console.log('Video metadata loaded for:', name);
+                video.play().catch(error => {
+                    console.error('Error playing video:', error);
+                });
+            };
+
+            const nameLabel = document.createElement('div');
+            nameLabel.className = 'name-label';
+            nameLabel.textContent = name;
+
+            videoContainer.appendChild(video);
+            videoContainer.appendChild(nameLabel);
+            
+            const videoGrid = document.getElementById('video-grid');
+            if (videoGrid) {
+                videoGrid.appendChild(videoContainer);
+                console.log('Added video container to grid for:', name);
+            } else {
+                console.error('Video grid element not found');
+            }
+            
+            // Adjust grid layout
+            adjustGridLayout();
+        }
+
+        // Adjust grid layout based on number of participants
+        function adjustGridLayout() {
+            const grid = document.getElementById('video-grid');
+            if (!grid) {
+                console.error('Video grid element not found');
+                return;
+            }
+            const containers = grid.getElementsByClassName('video-container');
+            const count = containers.length;
+
+            if (count === 1) {
+                grid.style.gridTemplateColumns = '1fr';
+            } else if (count === 2) {
+                grid.style.gridTemplateColumns = '1fr 1fr';
+            } else if (count <= 4) {
+                grid.style.gridTemplateColumns = 'repeat(2, 1fr)';
+            } else {
+                grid.style.gridTemplateColumns = 'repeat(3, 1fr)';
+            }
+        }
+
+        // Toggle camera
+        const cameraBtn = document.getElementById('cameraBtn');
+        let isCameraOn = true;
+        cameraBtn.addEventListener('click', () => {
+            isCameraOn = !isCameraOn;
+            cameraBtn.innerHTML = isCameraOn ? '<i class="fas fa-video"></i>' : '<i class="fas fa-video-slash"></i>';
+            localStream.getVideoTracks().forEach(track => {
+                track.enabled = isCameraOn;
+            });
+            socket.emit('toggle_video', { room: room, isVideoOn: isCameraOn });
+        });
+
+        // Toggle microphone
+        const micBtn = document.getElementById('micBtn');
+        let isMicOn = true;
+        micBtn.addEventListener('click', () => {
+            isMicOn = !isMicOn;
+            micBtn.innerHTML = isMicOn ? '<i class="fas fa-microphone"></i>' : '<i class="fas fa-microphone-slash"></i>';
+            localStream.getAudioTracks().forEach(track => {
+                track.enabled = isMicOn;
+            });
+            socket.emit('toggle_audio', { room: room, isAudioOn: isMicOn });
+        });
+
+        // Toggle screen share
+        const screenShareBtn = document.getElementById('screenShareBtn');
+        let isScreenSharing = false;
+        screenShareBtn.addEventListener('click', async () => {
+            if (!isScreenSharing) {
+                try {
+                    const screenStream = await navigator.mediaDevices.getDisplayMedia({
+                        video: true
+                    });
+                    const videoTrack = screenStream.getVideoTracks()[0];
+                    videoTrack.onended = () => {
+                        stopScreenSharing();
+                    };
+                    replaceVideoTrack(videoTrack);
+                    isScreenSharing = true;
+                    screenShareBtn.innerHTML = '<i class="fas fa-stop-circle"></i>';
+                } catch (error) {
+                    console.error('Error sharing screen:', error);
+                }
+            } else {
+                stopScreenSharing();
+            }
+        });
+
+        function stopScreenSharing() {
+            if (isScreenSharing) {
+                navigator.mediaDevices.getUserMedia({ video: true })
+                    .then(stream => {
+                        replaceVideoTrack(stream.getVideoTracks()[0]);
+                    });
+                isScreenSharing = false;
+                screenShareBtn.innerHTML = '<i class="fas fa-desktop"></i>';
+            }
+        }
+
+        function replaceVideoTrack(newTrack) {
+            const oldTrack = localStream.getVideoTracks()[0];
+            localStream.removeTrack(oldTrack);
+            localStream.addTrack(newTrack);
+            Object.values(peers).forEach(peer => {
+                const sender = peer.getSenders().find(s => s.track.kind === 'video');
+                if (sender) {
+                    sender.replaceTrack(newTrack);
+                }
+            });
+        }
+
+        // Gesture recognition
+        const gestureBtn = document.getElementById('gestureBtn');
+        let isGestureMode = false;
+        let gestureSequence = [];
+        let isRecording = false;
+        let noHandFrames = 0;
+        const NO_HAND_FRAMES_THRESHOLD = 30;
+        const SEQUENCE_LENGTH = 30; // Number of frames to collect
+        const CONFIDENCE_THRESHOLD = 0.7; // Minimum confidence to show prediction
+        let frameCount = 0;
+        let model = null;
+        let hands = null;
+        let camera = null;
+        let lastPredictionTime = 0;
+        const PREDICTION_COOLDOWN = 2000; // 2 seconds cooldown between predictions
+
+        // Load the gesture recognition model
+        async function loadModel() {
+            try {
+                model = await tf.loadLayersModel('{{ url_for('static', filename='models/hand_gesture_model/model.json') }}');
+                console.log('Model loaded successfully');
+            } catch (error) {
+                console.error('Error loading model:', error);
+            }
+        }
+
+        // Initialize MediaPipe Hands
+        async function initializeHands() {
+            hands = new Hands({
+                locateFile: (file) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+                }
+            });
+
+            hands.setOptions({
+                maxNumHands: 2,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            hands.onResults(onResults);
+        }
+
+        // Process hand landmarks and predict gesture
+        async function onResults(results) {
+            if (isGestureMode && results.multiHandLandmarks) {
+                const landmarks = results.multiHandLandmarks;
+                if (landmarks.length > 0) {
+                    noHandFrames = 0;
+                    
+                    // Create a sequence array to store landmarks for a single hand
+                    let currentFrame = new Array(63).fill(0);
+                    
+                    // Use the first detected hand's landmarks
+                    const hand = landmarks[0];
+                    hand.forEach((landmark, i) => {
+                        currentFrame[i * 3] = landmark.x;
+                        currentFrame[i * 3 + 1] = landmark.y;
+                        currentFrame[i * 3 + 2] = landmark.z;
+                    });
+
+                    // Add frame to sequence
+                    if (gestureSequence.length >= SEQUENCE_LENGTH) {
+                        gestureSequence.shift(); // Remove oldest frame
+                    }
+                    gestureSequence.push(currentFrame);
+                    frameCount++;
+
+                    // Only predict if we have enough frames and enough time has passed
+                    const now = Date.now();
+                    if (gestureSequence.length === SEQUENCE_LENGTH && 
+                        now - lastPredictionTime >= PREDICTION_COOLDOWN) {
+                        try {
+                            // Send landmarks to server for prediction
+                            const response = await fetch('/predict_gesture', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({
+                                    landmarks: gestureSequence
+                                })
+                            });
+
+                            if (!response.ok) {
+                                const errorData = await response.json();
+                                throw new Error(errorData.error || 'Server error');
+                            }
+
+                            const result = await response.json();
+                            
+                            // Only show prediction if confidence is above threshold
+                            if (result.gesture && result.confidence >= CONFIDENCE_THRESHOLD) {
+                                const timestamp = new Date().toISOString();
+                                socket.emit('chat_message', {
+                                    room: room,
+                                    message: `[Gesture] ${result.gesture}`,
+                                    timestamp: timestamp
+                                });
+                                lastPredictionTime = now;
+                                // Reset sequence after successful prediction
+                                gestureSequence = [];
+                                frameCount = 0;
+                            }
+                        } catch (error) {
+                            console.error('Error predicting gesture:', error.message);
+                        }
+                    }
+                } else {
+                    noHandFrames++;
+                    if (noHandFrames >= NO_HAND_FRAMES_THRESHOLD) {
+                        // Reset sequence when no hands are detected for a while
+                        gestureSequence = [];
+                        frameCount = 0;
+                        isRecording = false;
+                        noHandFrames = 0;
+                    }
+                }
+            }
+        }
+
+        gestureBtn.addEventListener('click', async () => {
+            isGestureMode = !isGestureMode;
+            gestureBtn.innerHTML = isGestureMode ? '<i class="fas fa-hand" style="color: #4CAF50;"></i>' : '<i class="fas fa-hand"></i>';
+            
+            if (isGestureMode) {
+                if (!hands) {
+                    await initializeHands();
+                }
+                if (!camera) {
+                    // Store the original video element
+                    const videoElement = document.querySelector('video');
+                    const originalSrcObject = videoElement.srcObject;
+                    
+                    camera = new Camera(videoElement, {
+                        onFrame: async () => {
+                            if (isGestureMode) {
+                                await hands.send({image: videoElement});
+                            }
+                        },
+                        width: 640,
+                        height: 480
+                    });
+                }
+                camera.start();
+            } else {
+                if (camera) {
+                    camera.stop();
+                    // Restore the original video stream
+                    const videoElement = document.querySelector('video');
+                    if (localStream) {
+                        videoElement.srcObject = localStream;
+                        videoElement.play().catch(error => {
+                            console.error('Error playing video:', error);
+                        });
+                    }
+                }
+                stopGestureRecognition();
+            }
+        });
+
+        function stopGestureRecognition() {
+            // Clean up gesture recognition
+            console.log('Stopping gesture recognition...');
+            gestureSequence = [];
+            frameCount = 0;
+            isRecording = false;
+            noHandFrames = 0;
+            lastPredictionTime = 0;
+        }
+
+        // Chat functionality
+        const chatPanel = document.getElementById('chatPanel');
+        const closeChatBtn = document.getElementById('closeChatBtn');
+        const messageInput = document.getElementById('messageInput');
+        const sendMessageBtn = document.getElementById('sendMessageBtn');
+        const chatMessages = document.getElementById('chatMessages');
+
+        closeChatBtn.addEventListener('click', () => {
+            chatPanel.classList.toggle('hidden');
+        });
+
+        function sendMessage() {
+            const message = messageInput.value.trim();
+            if (message) {
+                const timestamp = new Date().toISOString();
+                socket.emit('chat_message', {
+                    room: room,
+                    message: message,
+                    timestamp: timestamp
+                });
+                messageInput.value = '';
+            }
+        }
+
+        sendMessageBtn.addEventListener('click', sendMessage);
+        messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        socket.on('chat_message', (data) => {
+            const messageElement = document.createElement('div');
+            messageElement.className = `message ${data.userId === userId ? 'sent' : 'received'}`;
+            messageElement.innerHTML = `
+                <span class="message-author">${data.username}</span>
+                <span class="message-content">${data.message}</span>
+                <span class="message-time">${new Date(data.timestamp).toLocaleTimeString()}</span>
+            `;
+            chatMessages.appendChild(messageElement);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+
+            // Text-to-speech for gesture messages
+            if (data.message.startsWith('[Gesture]') && data.userId !== userId) {
+                const utterance = new SpeechSynthesisUtterance(data.message.replace('[Gesture]', ''));
+                utterance.lang = 'en-US';
+                utterance.rate = 1.0;
+                utterance.pitch = 1.0;
+                window.speechSynthesis.speak(utterance);
+            }
+        });
+
+        function leaveMeeting() {
+            socket.emit('leave', { room: room });
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+            }
+            Object.values(peers).forEach(peer => peer.close());
+            window.location.href = '{{ url_for('dashboard') }}';
+        }
+    </script>
+</body>
+</html> 

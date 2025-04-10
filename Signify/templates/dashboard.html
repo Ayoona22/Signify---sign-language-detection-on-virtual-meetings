@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Signify</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">
+            <a href="{{ url_for('dashboard') }}">Signify</a>
+        </div>
+        <div class="nav-menu">
+            <span class="welcome-text">Welcome, {{ current_user.username }}!</span>
+            <a href="{{ url_for('logout') }}" class="nav-link">Logout</a>
+        </div>
+    </nav>
+
+    <div class="dashboard-container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <div class="dashboard-grid">
+            <div class="meeting-actions">
+                <div class="create-meeting">
+                    <h2>Create New Meeting</h2>
+                    <form action="{{ url_for('create_meeting') }}" method="POST">
+                        <div class="form-group">
+                            <input type="text" name="title" placeholder="Meeting Title" required>
+                        </div>
+                        <button type="submit" class="btn primary-btn">
+                            <i class="fas fa-plus"></i> Create Meeting
+                        </button>
+                    </form>
+                </div>
+
+                <div class="join-meeting">
+                    <h2>Join Meeting</h2>
+                    <form action="{{ url_for('join_meeting') }}" method="POST">
+                        <div class="form-group">
+                            <input type="text" name="meeting_code" placeholder="Enter Meeting Code" required>
+                        </div>
+                        <button type="submit" class="btn secondary-btn">
+                            <i class="fas fa-sign-in-alt"></i> Join Meeting
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <div class="meetings-list">
+                <h2>Your Meetings</h2>
+                {% if meetings %}
+                    <div class="meetings-grid">
+                        {% for meeting in meetings %}
+                            <div class="meeting-card">
+                                <h3>{{ meeting.title }}</h3>
+                                <p class="meeting-code">Code: {{ meeting.meeting_code }}</p>
+                                <p class="meeting-date">Created: {{ meeting.created_at.strftime('%Y-%m-%d %H:%M') }}</p>
+                                <div class="meeting-actions">
+                                    <button class="btn copy-btn" onclick="copyMeetingCode('{{ meeting.meeting_code }}')">
+                                        <i class="fas fa-copy"></i> Copy Code
+                                    </button>
+                                    <a href="{{ url_for('meeting', code=meeting.meeting_code) }}" class="btn join-btn">
+                                        <i class="fas fa-video"></i> Join
+                                    </a>
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <p class="no-meetings">You haven't created any meetings yet.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function copyMeetingCode(code) {
+            navigator.clipboard.writeText(code).then(() => {
+                alert('Meeting code copied to clipboard!');
+            });
+        }
+    </script>
+</body>
+</html> 
