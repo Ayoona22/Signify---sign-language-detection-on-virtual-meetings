@@ -15,7 +15,6 @@ Signify is an innovative virtual meeting platform that bridges communication gap
 ```
 Signify_Virtual_Meeting_Pplatform/
 ├── Signify/              # Main application code
-├── convert_model.py      # Model conversion script
 └── README.md            # Project documentation
 ```
 
@@ -50,12 +49,6 @@ cd Signify_Virtual_Meeting_Pplatform
 
 ```bash
 pip install -r requirements.txt
-```
-
-3. Convert the model:
-
-```bash
-python convert_model.py
 ```
 
 ## Usage
